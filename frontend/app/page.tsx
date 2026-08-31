@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { DollarSign, Send, ShieldCheck, CheckCircle, Bell, Zap, LayoutDashboard, Settings, HelpCircle, Menu, X, Sun, Moon } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8001';
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'https://foodsafety-geminiapikey.up.railway.app';
 
 interface AuditLog {
   log_id: string;
