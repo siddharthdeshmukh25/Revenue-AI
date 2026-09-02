@@ -1,7 +1,7 @@
 """
 database.py
 -----------
-Thin data-access layer around PostgreSQL (Railway).
+Thin data-access layer around Supabase.
 
 Every function here does ONE job (create user, log audit entry, count
 attempts, etc.) so that main.py and ai_agent.py never talk to the database
@@ -10,25 +10,20 @@ directly. This keeps the "stopping rules" logic auditable in one place.
 
 import os
 from typing import Optional
-import psycopg2
-from psycopg2.extras import RealDictCursor
+from supabase import create_client, Client
 from dotenv import load_dotenv
 
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 MAX_INTERVENTION_ATTEMPTS = int(os.getenv("MAX_INTERVENTION_ATTEMPTS", 2))
 
-# For Railway deployment, DATABASE_URL is provided automatically
-# For local development, you can skip database setup and deploy directly to Railway
-if not DATABASE_URL:
-    print("WARNING: DATABASE_URL not found. This is expected for local development.")
-    print("For production, Railway will provide DATABASE_URL automatically.")
-    print("Deploy to Railway to use the database.")
+if not SUPABASE_URL or not SUPABASE_KEY:
+    print("WARNING: SUPABASE_URL or SUPABASE_KEY not found.")
+    print("Please set these environment variables in your .env file.")
 
-def get_connection():
-    """Get a database connection."""
-    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 # ---------------------------------------------------------------------
@@ -36,22 +31,16 @@ def get_connection():
 # ---------------------------------------------------------------------
 def get_or_create_user(name: str, email: str, phone: Optional[str] = None) -> dict:
     """Fetch a user by email, or create one if they don't exist yet."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM users WHERE email = %s", (email,))
-            existing = cur.fetchone()
-            if existing:
-                return dict(existing)
-            
-            cur.execute(
-                "INSERT INTO users (name, email, phone) VALUES (%s, %s, %s) RETURNING *",
-                (name, email, phone)
-            )
-            conn.commit()
-            return dict(cur.fetchone())
-    finally:
-        conn.close()
+    result = supabase.table('users').select('*').eq('email', email).execute()
+    if result.data:
+        return result.data[0]
+    
+    result = supabase.table('users').insert({
+        'name': name,
+        'email': email,
+        'phone': phone
+    }).execute()
+    return result.data[0]
 
 
 # ---------------------------------------------------------------------
@@ -59,38 +48,22 @@ def get_or_create_user(name: str, email: str, phone: Optional[str] = None) -> di
 # ---------------------------------------------------------------------
 def create_transaction(user_id: str, amount: float, status: str, error_code: Optional[str]) -> dict:
     """Insert a new at-risk transaction (failed payment / abandoned checkout)."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO transactions (user_id, amount, status, error_code) VALUES (%s, %s, %s, %s) RETURNING *",
-                (user_id, amount, status, error_code)
-            )
-            conn.commit()
-            return dict(cur.fetchone())
-    finally:
-        conn.close()
+    result = supabase.table('transactions').insert({
+        'user_id': user_id,
+        'amount': amount,
+        'status': status,
+        'error_code': error_code
+    }).execute()
+    return result.data[0]
 
 
 def update_transaction_status(txn_id: str, status: str) -> None:
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE transactions SET status = %s WHERE txn_id = %s", (status, txn_id))
-            conn.commit()
-    finally:
-        conn.close()
+    supabase.table('transactions').update({'status': status}).eq('txn_id', txn_id).execute()
 
 
 def get_transaction(txn_id: str) -> Optional[dict]:
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM transactions WHERE txn_id = %s", (txn_id,))
-            result = cur.fetchone()
-            return dict(result) if result else None
-    finally:
-        conn.close()
+    result = supabase.table('transactions').select('*').eq('txn_id', txn_id).execute()
+    return result.data[0] if result.data else None
 
 
 # ---------------------------------------------------------------------
@@ -102,20 +75,13 @@ def get_logs_for_user(user_id: str) -> list:
     Used to enforce the "max attempts per user" stopping rule, and to
     check for an existing 'promise_to_pay' from a previous intervention.
     """
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT txn_id FROM transactions WHERE user_id = %s", (user_id,))
-            txns = cur.fetchall()
-            txn_ids = [t["txn_id"] for t in txns] if txns else []
-            if not txn_ids:
-                return []
-            
-            cur.execute("SELECT * FROM ai_audit_logs WHERE txn_id = ANY(%s)", (txn_ids,))
-            logs = cur.fetchall()
-            return [dict(log) for log in logs] if logs else []
-    finally:
-        conn.close()
+    result = supabase.table('transactions').select('txn_id').eq('user_id', user_id).execute()
+    txn_ids = [t['txn_id'] for t in result.data] if result.data else []
+    if not txn_ids:
+        return []
+    
+    result = supabase.table('ai_audit_logs').select('*').in_('txn_id', txn_ids).execute()
+    return result.data if result.data else []
 
 
 def count_intervention_attempts(user_id: str) -> int:
@@ -140,19 +106,15 @@ def log_audit_entry(
 ) -> dict:
     """Write one row to ai_audit_logs. This is the single source of truth
     for 'what did the agent decide and do'."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """INSERT INTO ai_audit_logs 
-                   (txn_id, root_cause_diagnosed, action_taken, message_sent, money_recovered, status) 
-                   VALUES (%s, %s, %s, %s, %s, %s) RETURNING *""",
-                (txn_id, root_cause, action_taken, message_sent, money_recovered, status)
-            )
-            conn.commit()
-            return dict(cur.fetchone())
-    finally:
-        conn.close()
+    result = supabase.table('ai_audit_logs').insert({
+        'txn_id': txn_id,
+        'root_cause_diagnosed': root_cause,
+        'action_taken': action_taken,
+        'message_sent': message_sent,
+        'money_recovered': money_recovered,
+        'status': status
+    }).execute()
+    return result.data[0]
 
 
 # ---------------------------------------------------------------------
@@ -160,59 +122,35 @@ def log_audit_entry(
 # ---------------------------------------------------------------------
 def get_all_audit_logs() -> list:
     """Full audit trail, most recent first — used by the Streamlit dashboard."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM ai_audit_logs ORDER BY timestamp DESC")
-            logs = cur.fetchall()
-            return [dict(log) for log in logs] if logs else []
-    finally:
-        conn.close()
+    result = supabase.table('ai_audit_logs').select('*').order('timestamp', desc=True).execute()
+    return result.data if result.data else []
 
 
 def get_total_money_recovered() -> float:
     """Sum of transaction amounts where money_recovered=True in the audit log."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT txn_id FROM ai_audit_logs WHERE money_recovered = TRUE")
-            logs = cur.fetchall()
-            if not logs:
-                return 0.0
-            
-            total = 0.0
-            for log in logs:
-                txn = get_transaction(log["txn_id"])
-                if txn:
-                    total += float(txn["amount"])
-            return total
-    finally:
-        conn.close()
+    result = supabase.table('ai_audit_logs').select('txn_id').eq('money_recovered', True).execute()
+    if not result.data:
+        return 0.0
+    
+    total = 0.0
+    for log in result.data:
+        txn = get_transaction(log['txn_id'])
+        if txn:
+            total += float(txn['amount'])
+    return total
 
 
 def get_all_transactions() -> list:
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM transactions ORDER BY created_at DESC")
-            txns = cur.fetchall()
-            return [dict(txn) for txn in txns] if txns else []
-    finally:
-        conn.close()
+    result = supabase.table('transactions').select('*').order('created_at', desc=True).execute()
+    return result.data if result.data else []
 
 
 def delete_all_performance_data() -> dict:
     """Delete all audit logs, transactions, and users to clear performance data."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            # Delete audit logs first (they reference transactions)
-            cur.execute("DELETE FROM ai_audit_logs WHERE log_id IS NOT NULL")
-            # Delete transactions (they reference users)
-            cur.execute("DELETE FROM transactions WHERE txn_id IS NOT NULL")
-            # Delete users
-            cur.execute("DELETE FROM users WHERE user_id IS NOT NULL")
-            conn.commit()
-        return {"status": "success", "message": "All performance data deleted"}
-    finally:
-        conn.close()
+    # Delete audit logs first (they reference transactions)
+    supabase.table('ai_audit_logs').delete().neq('log_id', None).execute()
+    # Delete transactions (they reference users)
+    supabase.table('transactions').delete().neq('txn_id', None).execute()
+    # Delete users
+    supabase.table('users').delete().neq('user_id', None).execute()
+    return {"status": "success", "message": "All performance data deleted"}
