@@ -210,104 +210,111 @@ def audit_logs():
 @app.delete("/performance-data")
 def delete_performance_data():
     """Delete all performance data (audit logs, transactions, users)"""
-    return db.delete_all_performance_data()
+    result = db.delete_all_performance_data()
+    if result.get("status") == "error":
+        raise HTTPException(status_code=500, detail=result.get("message"))
+    return result
 
 
 @app.post("/auto-generate")
 def auto_generate_transactions(count: int = 5):
     """Auto-generate random test transactions with AI processing"""
-    results = []
-    
-    # Sample data for random generation
-    names = ["Aarav Sharma", "Priya Patel", "Rahul Kumar", "Sneha Gupta", "Vikram Singh", "Anjali Verma", "Rohan Mehta", "Kavita Rao"]
-    domains = ["gmail.com", "yahoo.com", "outlook.com", "example.com"]
-    error_codes = ["INSUFFICIENT_FUNDS", "GATEWAY_TIMEOUT", "CARD_DECLINED", "CARD_EXPIRED", "NETWORK_ERROR"]
-    amounts = [999, 1499, 2499, 4999, 9999]
-    
-    for i in range(count):
-        # Generate random transaction data
-        name = random.choice(names)
-        email = f"{name.lower().replace(' ', '.')}@{random.choice(domains)}"
-        phone = f"+91{random.randint(7000000000, 9999999999)}"
-        amount = random.choice(amounts)
-        status = random.choice(["failed", "abandoned"])
-        error_code = random.choice(error_codes) if status == "failed" else None
+    try:
+        results = []
         
-        # Create webhook payload
-        payload = WebhookPayload(
-            user_name=name,
-            user_email=email,
-            user_phone=phone,
-            amount=amount,
-            status=status,
-            error_code=error_code
-        )
+        # Sample data for random generation
+        names = ["Aarav Sharma", "Priya Patel", "Rahul Kumar", "Sneha Gupta", "Vikram Singh", "Anjali Verma", "Rohan Mehta", "Kavita Rao"]
+        domains = ["gmail.com", "yahoo.com", "outlook.com", "example.com"]
+        error_codes = ["INSUFFICIENT_FUNDS", "GATEWAY_TIMEOUT", "CARD_DECLINED", "CARD_EXPIRED", "NETWORK_ERROR"]
+        amounts = [999, 1499, 2499, 4999, 9999]
         
-        # Process through the same webhook logic
-        user = db.get_or_create_user(payload.user_name, payload.user_email, payload.user_phone)
-        user_id = user["user_id"]
-        
-        txn = db.create_transaction(
-            user_id=user_id,
-            amount=payload.amount,
-            status=payload.status,
-            error_code=payload.error_code,
-        )
-        txn_id = txn["txn_id"]
-        
-        # Check stopping rules
-        if db.has_active_promise_to_pay(user_id):
-            log = db.log_audit_entry(
-                txn_id=txn_id,
-                root_cause="Not evaluated (halted)",
-                action_taken="HALT_PROMISE_TO_PAY",
-                message_sent=None,
-                money_recovered=False,
-                status="halted",
+        for i in range(count):
+            # Generate random transaction data
+            name = random.choice(names)
+            email = f"{name.lower().replace(' ', '.')}@{random.choice(domains)}"
+            phone = f"+91{random.randint(7000000000, 9999999999)}"
+            amount = random.choice(amounts)
+            status = random.choice(["failed", "abandoned"])
+            error_code = random.choice(error_codes) if status == "failed" else None
+            
+            # Create webhook payload
+            payload = WebhookPayload(
+                user_name=name,
+                user_email=email,
+                user_phone=phone,
+                amount=amount,
+                status=status,
+                error_code=error_code
             )
-            results.append({"txn_id": txn_id, "status": "halted", "reason": "HALT_PROMISE_TO_PAY"})
-            continue
-        
-        attempts_so_far = db.count_intervention_attempts(user_id)
-        if attempts_so_far >= MAX_INTERVENTION_ATTEMPTS:
+            
+            # Process through the same webhook logic
+            user = db.get_or_create_user(payload.user_name, payload.user_email, payload.user_phone)
+            user_id = user["user_id"]
+            
+            txn = db.create_transaction(
+                user_id=user_id,
+                amount=payload.amount,
+                status=payload.status,
+                error_code=payload.error_code,
+            )
+            txn_id = txn["txn_id"]
+            
+            # Check stopping rules
+            if db.has_active_promise_to_pay(user_id):
+                log = db.log_audit_entry(
+                    txn_id=txn_id,
+                    root_cause="Not evaluated (halted)",
+                    action_taken="HALT_PROMISE_TO_PAY",
+                    message_sent=None,
+                    money_recovered=False,
+                    status="halted",
+                )
+                results.append({"txn_id": txn_id, "status": "halted", "reason": "HALT_PROMISE_TO_PAY"})
+                continue
+            
+            attempts_so_far = db.count_intervention_attempts(user_id)
+            if attempts_so_far >= MAX_INTERVENTION_ATTEMPTS:
+                db.log_audit_entry(
+                    txn_id=txn_id,
+                    root_cause="Not evaluated (halted)",
+                    action_taken="HALT_MAX_ATTEMPTS",
+                    message_sent=None,
+                    money_recovered=False,
+                    status="halted",
+                )
+                results.append({"txn_id": txn_id, "status": "halted", "reason": "HALT_MAX_ATTEMPTS"})
+                continue
+            
+            # AI processing
+            decision = ai_agent.diagnose_and_recommend(txn, payload.error_code)
+            
+            status_log = "promised_to_pay" if decision["action_taken"] != "NO_ACTION" else "promise_pending"
             db.log_audit_entry(
                 txn_id=txn_id,
-                root_cause="Not evaluated (halted)",
-                action_taken="HALT_MAX_ATTEMPTS",
-                message_sent=None,
+                root_cause=decision["root_cause"],
+                action_taken=decision["action_taken"],
+                message_sent=decision["message_sent"],
                 money_recovered=False,
-                status="halted",
+                status=status_log,
             )
-            results.append({"txn_id": txn_id, "status": "halted", "reason": "HALT_MAX_ATTEMPTS"})
-            continue
+            
+            results.append({
+                "txn_id": txn_id,
+                "status": "processed",
+                "action_taken": decision["action_taken"],
+                "root_cause": decision["root_cause"],
+                "message": decision["message_sent"]
+            })
         
-        # AI processing
-        decision = ai_agent.diagnose_and_recommend(txn, payload.error_code)
+        return {
+            "total_generated": count,
+            "processed": len([r for r in results if r["status"] == "processed"]),
+            "halted": len([r for r in results if r["status"] == "halted"]),
+            "results": results
+        }
         
-        status_log = "promised_to_pay" if decision["action_taken"] != "NO_ACTION" else "promise_pending"
-        db.log_audit_entry(
-            txn_id=txn_id,
-            root_cause=decision["root_cause"],
-            action_taken=decision["action_taken"],
-            message_sent=decision["message_sent"],
-            money_recovered=False,
-            status=status_log,
-        )
-        
-        results.append({
-            "txn_id": txn_id,
-            "status": "processed",
-            "action_taken": decision["action_taken"],
-            "root_cause": decision["root_cause"],
-            "message": decision["message_sent"]
-        })
-    
-    return {
-        "total_generated": count,
-        "processed": len([r for r in results if r["status"] == "processed"]),
-        "halted": len([r for r in results if r["status"] == "halted"]),
-        "results": results
-    }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to auto-generate transactions: {str(e)}")
 
 
 if __name__ == "__main__":

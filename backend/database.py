@@ -147,10 +147,13 @@ def get_all_transactions() -> list:
 
 def delete_all_performance_data() -> dict:
     """Delete all audit logs, transactions, and users to clear performance data."""
-    # Delete audit logs first (they reference transactions)
-    supabase.table('ai_audit_logs').delete().neq('log_id', None).execute()
-    # Delete transactions (they reference users)
-    supabase.table('transactions').delete().neq('txn_id', None).execute()
-    # Delete users
-    supabase.table('users').delete().neq('user_id', None).execute()
-    return {"status": "success", "message": "All performance data deleted"}
+    try:
+        # Delete audit logs first (they reference transactions)
+        supabase.table('ai_audit_logs').delete().neq('log_id', None).execute()
+        # Delete transactions (they reference users)
+        supabase.table('transactions').delete().neq('txn_id', None).execute()
+        # Delete users
+        supabase.table('users').delete().neq('user_id', None).execute()
+        return {"status": "success", "message": "All performance data deleted"}
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to delete data: {str(e)}"}

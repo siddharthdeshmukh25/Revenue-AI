@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { DollarSign, Send, ShieldCheck, CheckCircle, Bell, Zap, LayoutDashboard, Settings, HelpCircle, Menu, X, Sun, Moon } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 
-const BACKEND_URL = process.env.REVENUE_AI_API || 'http://localhost:8000';
+const BACKEND_URL = 'https://revenue-ai.onrender.com';
 
 interface AuditLog {
   log_id: string;
@@ -20,7 +20,7 @@ interface AuditLog {
 interface WebhookPayload {
   user_name: string;
   user_email: string;
-  user_phone: string;
+  user_phone: string | null;
   amount: number;
   status: string;
   error_code: string | null;
@@ -30,8 +30,8 @@ interface WebhookResponse {
   halted: boolean;
   halt_reason?: string;
   action_taken: string;
-  root_cause: string;
-  message_sent: string;
+  root_cause?: string;
+  message_sent?: string;
 }
 
 const COLORS = ['#4361ee', '#3f37c9', '#4895ef', '#4cc9f0', '#7209b7'];
@@ -85,12 +85,15 @@ export default function Dashboard() {
   const fetchLogs = async () => {
     try {
       const response = await fetch(`${BACKEND_URL}/audit-logs`);
-      if (!response.ok) throw new Error('Failed to fetch logs');
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Failed to fetch logs');
+      }
       const data = await response.json();
       setLogs(data.logs || []);
       setTotalRecovered(data.total_recovered || 0);
     } catch (err) {
-      setError('Failed to connect to backend. Make sure the FastAPI server is running.');
+      setError(err instanceof Error ? err.message : 'Failed to connect to backend. Make sure the FastAPI server is running.');
     } finally {
       setLoading(false);
     }
@@ -109,13 +112,16 @@ export default function Dashboard() {
         body: JSON.stringify(formData),
       });
 
-      if (!response.ok) throw new Error('Webhook failed');
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Webhook failed');
+      }
 
       const result = await response.json();
       setWebhookResult(result);
       fetchLogs(); // Refresh data
     } catch (err) {
-      setError('Failed to trigger webhook. Check backend connection.');
+      setError(err instanceof Error ? err.message : 'Failed to trigger webhook. Check backend connection.');
     } finally {
       setWebhookLoading(false);
     }
@@ -126,10 +132,13 @@ export default function Dashboard() {
       const response = await fetch(`${BACKEND_URL}/audit-log/${logId}/mark-recovered`, {
         method: 'POST',
       });
-      if (!response.ok) throw new Error('Failed to mark as recovered');
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Failed to mark as recovered');
+      }
       fetchLogs();
     } catch (err) {
-      setError('Failed to mark as recovered');
+      setError(err instanceof Error ? err.message : 'Failed to mark as recovered');
     }
   };
 
@@ -141,10 +150,13 @@ export default function Dashboard() {
       const response = await fetch(`${BACKEND_URL}/performance-data`, {
         method: 'DELETE',
       });
-      if (!response.ok) throw new Error('Failed to delete performance data');
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Failed to delete performance data');
+      }
       fetchLogs(); // Refresh data
     } catch (err) {
-      setError('Failed to delete performance data');
+      setError(err instanceof Error ? err.message : 'Failed to delete performance data');
     }
   };
 
@@ -155,12 +167,15 @@ export default function Dashboard() {
       const response = await fetch(`${BACKEND_URL}/auto-generate?count=5`, {
         method: 'POST',
       });
-      if (!response.ok) throw new Error('Failed to auto-generate transactions');
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Failed to auto-generate transactions');
+      }
       const result = await response.json();
       fetchLogs(); // Refresh data
       setAutoGenerateResult(result);
     } catch (err) {
-      setError('Failed to auto-generate transactions');
+      setError(err instanceof Error ? err.message : 'Failed to auto-generate transactions');
     } finally {
       setAutoGenerateLoading(false);
     }
@@ -233,19 +248,6 @@ export default function Dashboard() {
                     <button className={`w-12 h-6 rounded-full p-1 transition-colors ${darkMode ? 'bg-[#a3e635]' : 'bg-gray-300'}`}>
                       <div className={`w-4 h-4 rounded-full transition-transform bg-white ${darkMode ? 'translate-x-6' : ''}`} />
                     </button>
-                  </div>
-                </div>
-              </div>
-              <div className="border-t pt-4" style={{ borderColor: darkMode ? '#333' : '#e5e7eb' }}>
-                <h3 className={`text-base font-semibold mb-3 ${darkMode ? 'text-white' : 'text-gray-900'}`}>API Configuration</h3>
-                <div className="space-y-3">
-                  <div>
-                    <label className={`block text-xs font-medium mb-1 ${darkMode ? 'text-gray-400' : 'text-gray-700'}`}>Backend URL</label>
-                    <input
-                      type="text"
-                      defaultValue={BACKEND_URL}
-                      className={`w-full px-3 py-2 rounded-md border ${darkMode ? 'bg-[#0a0a0a] border-gray-700 text-white' : 'bg-white border-gray-300 text-gray-900'}`}
-                    />
                   </div>
                 </div>
               </div>
@@ -691,6 +693,7 @@ export default function Dashboard() {
           <div className="flex items-center gap-2">
             <Zap className="w-6 h-6 text-[#a3e635]" />
             {sidebarOpen && <span className={`text-lg font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>Revenue AI</span>}
+            <div className="w-2 h-2 bg-[#a3e635] rounded-full ml-auto"></div>
           </div>
         </div>
 
