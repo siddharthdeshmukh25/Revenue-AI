@@ -485,7 +485,7 @@ export default function Dashboard() {
                       />
                       <input
                         type="text"
-                        value={formData.user_phone}
+                        value={formData.user_phone || ''}
                         onChange={(e) => setFormData({ ...formData, user_phone: e.target.value })}
                         className={`w-full mt-2 px-3 py-2 rounded-md border focus:ring-1 focus:ring-[#a3e635] focus:border-[#a3e635] text-sm ${darkMode ? 'bg-[#0a0a0a] border-gray-700 text-white placeholder-gray-600' : 'bg-white border-gray-300 text-gray-900 placeholder-gray-400'}`}
                         placeholder="Phone Number"
